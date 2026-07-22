@@ -16,11 +16,17 @@ jobs:
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
 
-      - name: Build solution (Release|Win32)
-        run: msbuild trade_dll.sln /p:Configuration=Release /p:Platform=Win32
+      - name: Build project directly (Release|Win32)
+        run: msbuild trade_dll.vcxproj /p:Configuration=Release /p:Platform=Win32
+
+      - name: List output files (debug helper)
+        run: dir /s /b *.dll
+        shell: cmd
 
       - name: Upload DLL artifact
         uses: actions/upload-artifact@v4
         with:
           name: trade_dll
-          path: Release/trade_dll.dll
+          path: |
+            Release/trade_dll.dll
+            Win32/Release/trade_dll.dll
