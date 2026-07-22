@@ -1,0 +1,26 @@
+name: Build trade_dll
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ master ]
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Build solution (Release|x64)
+        run: msbuild trade_dll.sln /p:Configuration=Release /p:Platform=x64
+
+      - name: Upload DLL artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: trade_dll
+          path: x64/Release/trade_dll.dll
