@@ -1,0 +1,27 @@
+name: Build Launcher
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup MSVC (x86)
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x86
+
+      - name: Compile launcher.cpp
+        shell: cmd
+        run: cl.exe /EHsc /O2 /DUNICODE /D_UNICODE launcher.cpp /link /SUBSYSTEM:WINDOWS user32.lib /OUT:Launcher.exe
+
+      - name: Upload Launcher.exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: Launcher
+          path: Launcher.exe
