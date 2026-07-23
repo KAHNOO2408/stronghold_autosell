@@ -5,9 +5,7 @@
 
 #include <windows.h>
 #include <string>
-#include <tlhelp32.h>
 
-// Name of the game executable (must match exactly, case-insensitive on Windows)
 static const wchar_t* GAME_EXE = L"Stronghold Crusader.exe";
 static const wchar_t* MOD_DLL  = L"trade_dll.dll";
 
@@ -19,32 +17,43 @@ static std::wstring GetExeDirectory() {
     return (pos == std::wstring::npos) ? L"" : full.substr(0, pos + 1);
 }
 
-static bool InjectDll(DWORD pid, const std::wstring& dllPath) {
-    HANDLE hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, pid);
-    if (!hProcess) return false;
-
+// Returns 0 on success, otherwise the step number where it failed (used with GetLastError()).
+static int InjectDll(HANDLE hProcess, const std::wstring& dllPath, DWORD* outLastError) {
     size_t sizeBytes = (dllPath.size() + 1) * sizeof(wchar_t);
-    LPVOID remoteMem = VirtualAllocEx(hProcess, NULL, sizeBytes, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-    if (!remoteMem) { CloseHandle(hProcess); return false; }
 
-    WriteProcessMemory(hProcess, remoteMem, dllPath.c_str(), sizeBytes, NULL);
+    LPVOID remoteMem = VirtualAllocEx(hProcess, NULL, sizeBytes, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    if (!remoteMem) { *outLastError = GetLastError(); return 1; }
+
+    if (!WriteProcessMemory(hProcess, remoteMem, dllPath.c_str(), sizeBytes, NULL)) {
+        *outLastError = GetLastError();
+        VirtualFreeEx(hProcess, remoteMem, 0, MEM_RELEASE);
+        return 2;
+    }
 
     LPTHREAD_START_ROUTINE loadLibraryAddr =
         (LPTHREAD_START_ROUTINE)GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "LoadLibraryW");
 
     HANDLE hThread = CreateRemoteThread(hProcess, NULL, 0, loadLibraryAddr, remoteMem, 0, NULL);
     if (!hThread) {
+        *outLastError = GetLastError();
         VirtualFreeEx(hProcess, remoteMem, 0, MEM_RELEASE);
-        CloseHandle(hProcess);
-        return false;
+        return 3;
     }
 
     WaitForSingleObject(hThread, INFINITE);
 
+    DWORD exitCode = 0;
+    GetExitCodeThread(hThread, &exitCode); // this is the HMODULE returned by LoadLibraryW, 0 = failed to load the dll itself
+
     VirtualFreeEx(hProcess, remoteMem, 0, MEM_RELEASE);
     CloseHandle(hThread);
-    CloseHandle(hProcess);
-    return true;
+
+    if (exitCode == 0) {
+        *outLastError = 0xDEAD; // sentinel meaning "LoadLibrary itself failed inside the target process"
+        return 4;
+    }
+
+    return 0;
 }
 
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
@@ -52,7 +61,6 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
     std::wstring gamePath = dir + GAME_EXE;
     std::wstring dllPath  = dir + MOD_DLL;
 
-    // Verify files exist
     if (GetFileAttributesW(gamePath.c_str()) == INVALID_FILE_ATTRIBUTES) {
         MessageBoxW(NULL, (L"Game exe not found:\n" + gamePath).c_str(), L"Launcher error", MB_ICONERROR);
         return 1;
@@ -65,29 +73,26 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
     STARTUPINFOW si = { sizeof(si) };
     PROCESS_INFORMATION pi = { 0 };
 
-    // Start the game suspended so we can inject before it runs any code
     BOOL created = CreateProcessW(
-        gamePath.c_str(),
-        NULL,
-        NULL,
-        NULL,
-        FALSE,
-        CREATE_SUSPENDED,
-        NULL,
-        dir.c_str(),
-        &si,
-        &pi
+        gamePath.c_str(), NULL, NULL, NULL, FALSE,
+        CREATE_SUSPENDED, NULL, dir.c_str(), &si, &pi
     );
 
     if (!created) {
-        MessageBoxW(NULL, L"Failed to start the game.", L"Launcher error", MB_ICONERROR);
+        DWORD err = GetLastError();
+        wchar_t msg[256];
+        wsprintfW(msg, L"Failed to start the game. GetLastError=%lu", err);
+        MessageBoxW(NULL, msg, L"Launcher error", MB_ICONERROR);
         return 1;
     }
 
-    bool ok = InjectDll(pi.dwProcessId, dllPath);
+    DWORD lastError = 0;
+    int step = InjectDll(pi.hProcess, dllPath, &lastError);
 
-    if (!ok) {
-        MessageBoxW(NULL, L"Failed to inject trade_dll.dll. The game will still start.", L"Launcher warning", MB_ICONWARNING);
+    if (step != 0) {
+        wchar_t msg[256];
+        wsprintfW(msg, L"Injection failed at step %d. GetLastError=%lu\n(4 = target process could not load the dll itself)", step, lastError);
+        MessageBoxW(NULL, msg, L"Launcher warning", MB_ICONWARNING);
     }
 
     ResumeThread(pi.hThread);
